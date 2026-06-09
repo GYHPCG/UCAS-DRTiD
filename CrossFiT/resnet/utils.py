@@ -40,8 +40,8 @@ class SupConLoss(nn.Module):
         Returns:
             A loss scalar.
         """
-        device = (torch.device('cuda')
-                  if features.is_cuda
+        device = (torch.device('npu')
+                  if features.is_npu
                   else torch.device('cpu'))
 
         if len(features.shape) < 3:

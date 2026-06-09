@@ -199,7 +199,7 @@ class ResNet(nn.Module):
         self.xfmer_dropout = nn.Dropout(0.1)
         self.xfmer = Transformer_head(hidden_size=self.xfmer_hidden_size, layers=self.xfmer_layer)
       
-        self.feat_size = int(512/32)
+        self.feat_size = 16  # default, will be dynamically adjusted in forward
         self.x2_pos_embed = get_2d_sincos_pos_embed(self.xfmer_hidden_size, self.feat_size) #x2 regular grid
         self.x2_pos_embed = torch.from_numpy(self.x2_pos_embed).float().unsqueeze(0)
 
@@ -333,15 +333,21 @@ class ResNet(nn.Module):
         x1_grid = F.interpolate(img1_grid.permute(0,3,1,2), scale_factor=1/32, mode='bilinear', align_corners=True)
         x1_grid = x1_grid * np.mean(np.array(range(g_size))) + np.mean(np.array(range(g_size))) # bs,2,16,16
 
-        x1_grid_embed = torch.ones(bs,g_size**2,feat_dim).cuda()
+        x1_grid_embed = torch.ones(bs,g_size**2,feat_dim).npu()
         for b in range(bs):
             x1_grid_bs = x1_grid[b].reshape([2,1,g_size,g_size])
             x1_grid_embed_bs = get_2d_sincos_pos_embed(embed_dim=feat_dim, grid_size=g_size, grid=x1_grid_bs.cpu().detach().numpy()) # 256,2048
             x1_grid_embed[b] = torch.from_numpy(x1_grid_embed_bs)
 
-        self.x2_pos_embed = self.x2_pos_embed.to(x1.device)
+        # Dynamically adjust x2_pos_embed to match actual feature map size
+        actual_feat_size = g_size
+        if actual_feat_size != self.x2_pos_embed.shape[1]:
+            x2_pos_embed = get_2d_sincos_pos_embed(self.xfmer_hidden_size, actual_feat_size)
+            x2_pos_embed = torch.from_numpy(x2_pos_embed).float().unsqueeze(0).to(x1.device)
+        else:
+            x2_pos_embed = self.x2_pos_embed.to(x1.device)
         x1_patch = x1_patch + x1_grid_embed #bs,256,1024
-        x2_patch = x2_patch + self.x2_pos_embed
+        x2_patch = x2_patch + x2_pos_embed
 
         out_patch = torch.cat([x1_patch, x2_patch], dim=1) #bs, 256, 1024
         out_patch = self.xfmer_dropout(out_patch)
@@ -713,7 +719,7 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     out: (M, D)
     """
     assert embed_dim % 2 == 0
-    omega = np.arange(embed_dim // 2, dtype=np.float)
+    omega = np.arange(embed_dim // 2, dtype=np.float32)
     omega /= embed_dim / 2.
     omega = 1. / 10000**omega  # (D/2,)
 

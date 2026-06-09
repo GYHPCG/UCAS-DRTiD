@@ -166,27 +166,32 @@ class deepdrid_clf(data.Dataset):
             self.file = 'Regular_DeepDRiD/regular_test/'  
             e_file = 'DR_label/DR_label/Challenge1_labels_test.csv' 
         
-        op_path = 'deepdrid_op.csv' 
-        op_file = pd.read_csv(self.path+op_path)
+        op_path = 'deepdrid_op.csv'
         self.dict_op = {}
         self.dict_if_op = {}
         self.dict_key = {}
-        for index, row in op_file.iterrows():
-            image_name = row['image'].split('.')[0]
-            self.dict_op[image_name] = [row['op_x'],row['op_y']]
-            self.dict_if_op[image_name] = row['if_op']
-            self.dict_key[image_name] = [row['key_x'],row['key_y']]
-
-
+        self._use_default_op = False
+        if os.path.exists(self.path+op_path):
+            op_file = pd.read_csv(self.path+op_path)
+            for index, row in op_file.iterrows():
+                image_name = row['image'].split('.')[0]
+                self.dict_op[image_name] = [row['op_x'],row['op_y']]
+                self.dict_if_op[image_name] = row['if_op']
+                self.dict_key[image_name] = [row['key_x'],row['key_y']]
+        else:
+            print(f"Warning: {self.path+op_path} not found, using image center as default op coords")
+            self._use_default_op = True
         img_list = [[[] for _ in range(2)] for _ in range(5)]
         self.imgs = []
         if test or tta_test:
             csv_file = pd.read_csv(self.path + e_file)
             self.dict_label = {}
-            for index, row in csv_file.iterrows(): 
+            self.dict_patient = {}
+            for index, row in csv_file.iterrows():
                 image_id = row['image_id']
-                rank = row['DR_Levels']
-                self.dict_label[image_id]=rank
+                patient_id = str(row['patient_id'])
+                self.dict_label[image_id] = row['DR_Levels']
+                self.dict_patient[image_id] = patient_id
 
             for i in range(0,len(os.listdir(self.path+self.file)),2):
                 image_1 = sorted(os.listdir(self.path+self.file))[i]
@@ -194,30 +199,38 @@ class deepdrid_clf(data.Dataset):
                 image_1_id = image_1.split('.')[0]
                 image_2_id = image_2.split('.')[0]
                 label1 = self.dict_label[image_1_id]
-                label2 = self.dict_label[image_2_id]
+                pid1 = self.dict_patient[image_1_id]
+                pid2 = self.dict_patient[image_2_id]
+                img1_path = self.path+self.file+pid1+'/'+image_1_id+'.jpg'
+                img2_path = self.path+self.file+pid2+'/'+image_2_id+'.jpg'
 
-                img1_op = self.dict_op[image_1_id]
-                img2_op = self.dict_op[image_2_id]
-
-                if_op1 = self.dict_if_op[image_1_id]
-                if_op2 = self.dict_if_op[image_2_id]
-                img1_key = self.dict_key[image_1_id]
-                img2_key = self.dict_key[image_2_id]
-                if if_op1 * if_op2 == 1:
-                    self.imgs.append([self.path+self.file+image_1_id+'.jpg', self.path+self.file+image_2_id+'.jpg', label1, image_1_id[:-1],img1_op,img2_op])
-                else: # no op, use key point
-                    self.imgs.append([self.path+self.file+image_1_id+'.jpg', self.path+self.file+image_2_id+'.jpg', label1, image_1_id[:-1],img1_key,img2_key])
+                if self._use_default_op:
+                    self.imgs.append([img1_path, img2_path, label1, image_1_id[:-1], [0.5,0.5], [0.5,0.5]])
+                else:
+                    img1_op = self.dict_op[image_1_id]
+                    img2_op = self.dict_op[image_2_id]
+                    if_op1 = self.dict_if_op[image_1_id]
+                    if_op2 = self.dict_if_op[image_2_id]
+                    img1_key = self.dict_key[image_1_id]
+                    img2_key = self.dict_key[image_2_id]
+                    if if_op1 * if_op2 == 1:
+                        self.imgs.append([img1_path, img2_path, label1, image_1_id[:-1], img1_op, img2_op])
+                    else:
+                        self.imgs.append([img1_path, img2_path, label1, image_1_id[:-1], img1_key, img2_key])
                 
         else:
             csv_file = pd.read_csv(self.path + e_file)
             self.dict_label = {}
+            self.dict_patient = {}
             for index, row in csv_file.iterrows():
                 image_id = row['image_id']
+                patient_id = str(row['patient_id'])
+                self.dict_patient[image_id] = patient_id
                 lr = image_id[-2]
-                if lr == 'l':
+                if lr == 'l' and pd.notna(row['left_eye_DR_Level']):
                     rank = int(row['left_eye_DR_Level'])
                     img_list[rank][0].append(image_id)
-                if lr == 'r':
+                if lr == 'r' and pd.notna(row['right_eye_DR_Level']):
                     rank = int(row['right_eye_DR_Level'])
                     img_list[rank][1].append(image_id)
             if val or train or tta_val:
@@ -225,20 +238,29 @@ class deepdrid_clf(data.Dataset):
                 for i in range(5):
                     for j in range(2):
                         print(i,j,len(img_list[i][j])//2,'pairs')
-                        for index in range(0,len(img_list[i][j]),2):
+                        for index in range(0,len(img_list[i][j])-1,2):
                             image_1_id = img_list[i][j][index]
                             image_2_id = img_list[i][j][index+1]
-                            img1_op = self.dict_op[image_1_id]
-                            img2_op = self.dict_op[image_2_id]
+                            pid1 = self.dict_patient[image_1_id]
+                            pid2 = self.dict_patient[image_2_id]
+                            img1_path = self.path+self.file+pid1+'/'+image_1_id+'.jpg'
+                            img2_path = self.path+self.file+pid2+'/'+image_2_id+'.jpg'
 
-                            if_op1 = self.dict_if_op[image_1_id]
-                            if_op2 = self.dict_if_op[image_2_id]
-                            img1_key = self.dict_key[image_1_id]
-                            img2_key = self.dict_key[image_2_id]
-                            if if_op1 * if_op2 == 1:
-                                self.imgs.append([self.path+self.file+image_1_id+'.jpg', self.path+self.file+image_2_id+'.jpg', i, image_1_id[:-1],img1_op,img2_op])
-                            else: # no op, use key point
-                                self.imgs.append([self.path+self.file+image_1_id+'.jpg', self.path+self.file+image_2_id+'.jpg', i, image_1_id[:-1],img1_key,img2_key])
+                            if self._use_default_op:
+                                img1_op = [0.5, 0.5]
+                                img2_op = [0.5, 0.5]
+                                self.imgs.append([img1_path, img2_path, i, image_1_id[:-1], img1_op, img2_op])
+                            else:
+                                img1_op = self.dict_op[image_1_id]
+                                img2_op = self.dict_op[image_2_id]
+                                if_op1 = self.dict_if_op[image_1_id]
+                                if_op2 = self.dict_if_op[image_2_id]
+                                img1_key = self.dict_key[image_1_id]
+                                img2_key = self.dict_key[image_2_id]
+                                if if_op1 * if_op2 == 1:
+                                    self.imgs.append([img1_path, img2_path, i, image_1_id[:-1], img1_op, img2_op])
+                                else:
+                                    self.imgs.append([img1_path, img2_path, i, image_1_id[:-1], img1_key, img2_key])
 
         self.rgb_norm_global = T.Normalize(
             mean = [0.380463, 0.234838, 0.142012],

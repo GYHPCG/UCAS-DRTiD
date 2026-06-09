@@ -16,7 +16,7 @@ from resnet.resnet import resnet50
 from resnet.resnet_fusion2 import resnet50 as resnet50_fusion2
 from utils.lr_scheduler import LRScheduler
 import random
-import torch.backends.cudnn as cudnn
+import torch_npu
 
 
 TIMESTAMP = "{0:%Y-%m-%dT%H-%M-%S/}".format(datetime.now())
@@ -44,12 +44,10 @@ test_epoch = 1
 
 my_whole_seed = 0
 torch.manual_seed(my_whole_seed)
-torch.cuda.manual_seed_all(my_whole_seed)
-torch.cuda.manual_seed(my_whole_seed)
+torch.npu.manual_seed_all(my_whole_seed)
+torch.npu.manual_seed(my_whole_seed)
 np.random.seed(my_whole_seed)
 random.seed(my_whole_seed)
-cudnn.deterministic = True
-cudnn.benchmark = False 
 
 
 def parse_args():
@@ -75,15 +73,15 @@ def main_single():
 
     if args.pretrained:
         print ("==> Load pretrained model")
-        ckpt = torch.load('./pretrained/kaggle_res50.pkl')
+        ckpt = torch.load('./pretrained/kaggle_res50.pkl', map_location='cpu')
         state_dict = ckpt['net']
         unParalled_state_dict = {}
         for key in state_dict.keys():
             unParalled_state_dict[key.replace("module.", "")] = state_dict[key]
         net.load_state_dict(unParalled_state_dict,True)
 
-    net = nn.DataParallel(net)
-    net = net.cuda()
+    # net = nn.DataParallel(net)
+    net = net.npu()
 
     if args.dataset == 'drtid':
         trainset = drtid(train=True, test=False)
@@ -92,15 +90,15 @@ def main_single():
         trainset = deepdrid_clf(train=True, val=False, test=False)
         valset = deepdrid_clf(train=False, val=True, test=False)
 
-    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=4, pin_memory=True)
-    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size, num_workers=4, pin_memory=True)
+    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=0, pin_memory=False)
+    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size, num_workers=0, pin_memory=False)
 
     # optim & crit
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-5) #1e-5
     lr_scheduler = LRScheduler(optimizer, len(trainloader), args)
 
     criterion = nn.CrossEntropyLoss()
-    criterion = criterion.cuda()
+    criterion = criterion.npu()
 
     save_dir = './checkpoints/' + args.visname + '/'
     if not os.path.exists(save_dir):
@@ -118,9 +116,9 @@ def main_single():
         for i, (x1, x2, label, id) in enumerate(trainloader):
             lr = lr_scheduler.update(i, epoch)
 
-            x1 = x1.float().cuda()
-            x2 = x2.float().cuda()
-            label = label.cuda()
+            x1 = x1.float().npu()
+            x2 = x2.float().npu()
+            label = label.npu()
 
             if args.fusion_type == '1':
                 y_pred = net(x1)
@@ -186,9 +184,9 @@ def main_single_val(net, valloader, epoch, test_log):
     label_list = []
 
     for i, (x1, x2, label, id) in enumerate(valloader):
-        x1 = x1.float().cuda()
-        x2 = x2.float().cuda()
-        label = label.cuda()
+        x1 = x1.float().npu()
+        x2 = x2.float().npu()
+        label = label.npu()
 
         if args.fusion_type == '1':
             y_pred = net(x1)
@@ -253,15 +251,15 @@ def main_fusion2():
 
     if args.pretrained:
         print ("==> Load pretrained model")
-        ckpt = torch.load('./pretrained/kaggle_res50.pkl')
+        ckpt = torch.load('./pretrained/kaggle_res50.pkl', map_location='cpu')
         state_dict = ckpt['net']
         unParalled_state_dict = {}
         for key in state_dict.keys():
             unParalled_state_dict[key.replace("module.", "")] = state_dict[key]
         net.load_state_dict(unParalled_state_dict,False)
 
-    net = nn.DataParallel(net)
-    net = net.cuda()
+    # net = nn.DataParallel(net)
+    net = net.npu()
 
     if args.dataset == 'drtid':
         trainset = drtid(train=True, test=False)
@@ -270,8 +268,8 @@ def main_fusion2():
         trainset = deepdrid_clf(train=True, val=False, test=False)
         valset = deepdrid_clf(train=False, val=True, test=False)
 
-    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=4)
-    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size,num_workers=4)
+    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=0)
+    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size,num_workers=0)
 
 
     # optim & crit
@@ -279,7 +277,7 @@ def main_fusion2():
     lr_scheduler = LRScheduler(optimizer, len(trainloader), args)
 
     criterion = nn.CrossEntropyLoss()
-    criterion = criterion.cuda()
+    criterion = criterion.npu()
     con_matx = meter.ConfusionMeter(args.n_classes)
 
     save_dir = './checkpoints/' + args.visname + '/'
@@ -299,9 +297,9 @@ def main_fusion2():
         for i, (x1, x2, label, id) in enumerate(trainloader):
             lr = lr_scheduler.update(i, epoch)
 
-            x1 = x1.float().cuda()
-            x2 = x2.float().cuda()
-            label = label.cuda()
+            x1 = x1.float().npu()
+            x2 = x2.float().npu()
+            label = label.npu()
             y_pred = net(x1,x2)
             
             loss = criterion(y_pred, label)
@@ -340,9 +338,9 @@ def main_fusion2_val(net, valloader, epoch, test_log):
     label_list = []
 
     for i, (x1, x2, label, id) in enumerate(valloader):
-        x1 = x1.float().cuda()
-        x2 = x2.float().cuda()
-        label = label.cuda()
+        x1 = x1.float().npu()
+        x2 = x2.float().npu()
+        label = label.npu()
 
         y_pred = net(x1,x2)
         con_matx.add(y_pred.detach(),label.detach())
@@ -386,15 +384,15 @@ def main_fusion3():
 
     if args.pretrained:
         print ("==> Load pretrained model")
-        ckpt = torch.load('./pretrained/kaggle_res50.pkl')
+        ckpt = torch.load('./pretrained/kaggle_res50.pkl', map_location='cpu')
         state_dict = ckpt['net']
         unParalled_state_dict = {}
         for key in state_dict.keys():
             unParalled_state_dict[key.replace("module.", "")] = state_dict[key]
         net.load_state_dict(unParalled_state_dict,True)
 
-    net = nn.DataParallel(net)
-    net = net.cuda()
+    # net = nn.DataParallel(net)
+    net = net.npu()
 
     if args.dataset == 'drtid':
         trainset = drtid(train=True, test=False)
@@ -403,15 +401,15 @@ def main_fusion3():
         trainset = deepdrid_clf(train=True, val=False, test=False)
         valset = deepdrid_clf(train=False, val=True, test=False)
 
-    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=4)
-    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size,num_workers=4)
+    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=0)
+    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size,num_workers=0)
 
     # optim & crit
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=1e-5) #1e-5
     lr_scheduler = LRScheduler(optimizer, len(trainloader), args)
 
     criterion = nn.CrossEntropyLoss()
-    criterion = criterion.cuda()
+    criterion = criterion.npu()
     con_matx = meter.ConfusionMeter(args.n_classes)
 
     save_dir = './checkpoints/' + args.visname + '/'
@@ -431,9 +429,9 @@ def main_fusion3():
         for i, (x1, x2, label, id) in enumerate(trainloader):
             lr = lr_scheduler.update(i, epoch)
 
-            x1 = x1.float().cuda()
-            x2 = x2.float().cuda()
-            label = label.cuda()
+            x1 = x1.float().npu()
+            x2 = x2.float().npu()
+            label = label.npu()
 
             y_pred1 = net(x1)
             y_pred2 = net(x2)            
@@ -477,15 +475,15 @@ def main_fusion3_val(net, valloader, epoch, test_log):
     label_list = []
 
     for i, (x1,x2,label,id) in enumerate(valloader):
-        x1 = x1.float().cuda()
-        x2 = x2.float().cuda()
-        label = label.cuda()
+        x1 = x1.float().npu()
+        x2 = x2.float().npu()
+        label = label.npu()
 
         y1_pred = net(x1)
         y2_pred = net(x2)
 
         if args.fusion_type == 'max':
-            pred = torch.zeros(x1.size(0)).long().cuda() #bs
+            pred = torch.zeros(x1.size(0)).long().npu() #bs
             pred1 = y1_pred.max(1)[1] #bs
             pred2 = y2_pred.max(1)[1]
 

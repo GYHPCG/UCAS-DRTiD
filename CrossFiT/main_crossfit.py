@@ -15,7 +15,7 @@ from sklearn.metrics import f1_score,roc_auc_score,cohen_kappa_score,accuracy_sc
 from resnet.resnet_crossfit import resnet50 as resnet50_crossfit
 from utils.lr_scheduler import LRScheduler
 import random
-import torch.backends.cudnn as cudnn
+import torch_npu
 
 
 import warnings
@@ -44,6 +44,7 @@ parser.add_argument("--warmup_epochs", default=0, type=int)
 parser.add_argument("--warmup_lr", default=0.0, type=float)
 parser.add_argument("--targetlr", default=0.0, type=float)
 parser.add_argument("--lambda_value", default=0.25, type=float)
+parser.add_argument("--tta", default=False, type=bool, help='test-time augmentation')
 
 val_epoch = 1
 test_epoch = 1
@@ -51,12 +52,10 @@ test_epoch = 1
 
 my_whole_seed = 0
 torch.manual_seed(my_whole_seed)
-torch.cuda.manual_seed_all(my_whole_seed)
-torch.cuda.manual_seed(my_whole_seed)
+torch.npu.manual_seed_all(my_whole_seed)
+torch.npu.manual_seed(my_whole_seed)
 np.random.seed(my_whole_seed)
 random.seed(my_whole_seed)
-cudnn.deterministic = True
-cudnn.benchmark = False 
     
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)/1048576
@@ -85,7 +84,7 @@ def main_train():
     print(count_parameters(net))
     if args.pretrained:
         print ("==> Load pretrained model")
-        ckpt = torch.load('./pretrained/kaggle_res50.pkl')
+        ckpt = torch.load('./pretrained/kaggle_res50.pkl', map_location='cpu')
         state_dict = ckpt['net']
         unParalled_state_dict = {}
         for key in state_dict.keys():
@@ -93,8 +92,8 @@ def main_train():
             unParalled_state_dict[new_key] = state_dict[key]
         net.load_state_dict(unParalled_state_dict,False)
 
-    net = nn.DataParallel(net)
-    net = net.cuda()
+    # net = nn.DataParallel(net)
+    net = net.npu()
 
     if args.dataset == 'drtid':
         trainset = drtid(train=True, test=False)
@@ -103,8 +102,8 @@ def main_train():
         trainset = deepdrid_clf(train=True, val=False, test=False)
         valset = deepdrid_clf(train=False, val=True, test=False)
 
-    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=4,pin_memory=True)
-    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size,num_workers=4,pin_memory=True)
+    trainloader = DataLoader(trainset,  shuffle=True, batch_size=args.batch_size, num_workers=0,pin_memory=False)
+    valloader = DataLoader(valset, shuffle=False, batch_size=args.batch_size,num_workers=0,pin_memory=False)
 
 
     # optim & crit
@@ -112,7 +111,7 @@ def main_train():
     lr_scheduler = LRScheduler(optimizer, len(trainloader), args)
 
     criterion = nn.CrossEntropyLoss()
-    criterion = criterion.cuda()
+    criterion = criterion.npu()
     con_matx = meter.ConfusionMeter(args.n_classes)
 
     save_dir = './checkpoints/' + args.visname + '/'
@@ -132,10 +131,10 @@ def main_train():
         for i, (x1, x2, label, img1_grid, id) in enumerate(trainloader):
             lr = lr_scheduler.update(i, epoch)
 
-            x1 = x1.float().cuda()
-            x2 = x2.float().cuda()
-            img1_grid = img1_grid.cuda()
-            label = label.cuda()
+            x1 = x1.float().npu()
+            x2 = x2.float().npu()
+            img1_grid = img1_grid.npu()
+            label = label.npu()
             y_pred = net(x1,x2,img1_grid)
             
             loss = criterion(y_pred, label)
@@ -160,10 +159,10 @@ def main_train():
         test_log.flush()  
 
         if (epoch+1)%val_epoch == 0:
-            main_val(net, valloader, epoch, test_log)
+            main_val(net, valloader, epoch, test_log, tta=args.tta)
 
 @torch.no_grad()
-def main_val(net, valloader, epoch, test_log):
+def main_val(net, valloader, epoch, test_log, tta=False):
     global best_acc
     global best_kappa
 
@@ -175,16 +174,38 @@ def main_val(net, valloader, epoch, test_log):
     label_list = []
 
     for i, (x1, x2, label, img1_grid, id) in enumerate(valloader):
-        x1 = x1.float().cuda()
-        x2 = x2.float().cuda()
-        img1_grid = img1_grid.cuda()
-        label = label.cuda()
+        x1 = x1.float().npu()
+        x2 = x2.float().npu()
+        img1_grid = img1_grid.npu()
+        label = label.npu()
 
-        y_pred = net(x1,x2,img1_grid)
-        con_matx.add(y_pred.detach(),label.detach())
+        if tta:
+            # TTA: original + horizontal flip + vertical flip
+            y_pred_list = []
+            # 1) Original
+            y_pred_list.append(torch.softmax(net(x1, x2, img1_grid), dim=-1))
+            # 2) Horizontal flip
+            x1_hf = torch.flip(x1, dims=[3])
+            x2_hf = torch.flip(x2, dims=[3])
+            grid_hf = img1_grid.clone()
+            grid_hf[..., 0] = -grid_hf[..., 0]
+            y_pred_list.append(torch.softmax(net(x1_hf, x2_hf, grid_hf), dim=-1))
+            # 3) Vertical flip
+            x1_vf = torch.flip(x1, dims=[2])
+            x2_vf = torch.flip(x2, dims=[2])
+            grid_vf = img1_grid.clone()
+            grid_vf[..., 1] = -grid_vf[..., 1]
+            y_pred_list.append(torch.softmax(net(x1_vf, x2_vf, grid_vf), dim=-1))
+
+            y_pred = torch.stack(y_pred_list, dim=0).mean(dim=0)
+            y_pred = torch.log(y_pred + 1e-8)  # convert back to logit space for con_matx
+        else:
+            y_pred = net(x1, x2, img1_grid)
+
+        con_matx.add(y_pred.detach(), label.detach())
 
         label_list.extend(label.cpu().detach())
-        predicted_list.extend(torch.softmax(y_pred,dim=-1).squeeze(-1).cpu().detach().numpy())
+        predicted_list.extend(torch.softmax(y_pred, dim=-1).squeeze(-1).cpu().detach().numpy())
 
         pred = y_pred.max(1)[1]
         pred_list.extend(pred.cpu().detach())

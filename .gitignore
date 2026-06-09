@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Data (large files)
+CrossFiT/DeepDRiD/
+CrossFiT/DRTiD/
+CrossFiT/pretrained/
+CrossFiT/checkpoints/
+CrossFiT/logs/
+
+# Temp files
+*.pkl
+*.pth
+*.pt
+kernel_meta/
+fusion_result.json
+challenge1_results.csv
